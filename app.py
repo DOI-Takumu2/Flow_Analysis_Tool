@@ -361,7 +361,7 @@ if uploaded_file:
 st.markdown("""
 <hr />
 <small>
-  ※ レイアウトや書体は実行時の環境やブラウザによって変わる場合があります。<br/>
-  DOI, Takumu (2025). "Flow Analysis Tool [Computer software]."
+  本ツール使用による成果物を公表する際は、以下の例のように引用していただけると嬉しいです。<br/>
+  DOI, Takumu (2025). Flow Analysis Tool [Computer software]. Usage date: YYYY-MM-DD."
 </small>
 """, unsafe_allow_html=True)
