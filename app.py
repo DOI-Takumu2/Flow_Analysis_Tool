@@ -193,7 +193,7 @@ if uploaded_file:
     # (A) 各モデルの推定・パラメータ取得
     # -----------------------------------------------------------
     if model_choice == "グラビティモデル":
-        # 条件に合うデータを抜き出し
+        # 以下、グラビティモデルの処理は既存のまま
         df_model = df_fixed[
             (df_fixed["Flow"] > 0)
             & (df_fixed["Distance"] > 0)
@@ -210,18 +210,13 @@ if uploaded_file:
         X = sm.add_constant(X)
         y = df_model["log_Flow"]
 
-        # OLS推定
         model = sm.OLS(y, X).fit()
 
-        # 推定パラメータを変数に格納
         b0 = model.params.get('const', 0.0)
         b_dist = model.params.get('log_Distance', 0.0)
         b_popO = model.params.get('log_PopO', 0.0)
         b_popD = model.params.get('log_PopD', 0.0)
 
-        # -----------------------------------------------------
-        # (A1) 予測されたモデル式を表示
-        # -----------------------------------------------------
         st.markdown("### 予測されたモデル式")
         st.latex(r'''
         \begin{aligned}
@@ -243,7 +238,6 @@ if uploaded_file:
         \end{aligned}
         ''' % (b0, b_dist, b_popO, b_popD))
 
-        # (A2) 回帰モデルの結果評価
         df_model["log_Flow_pred"] = model.predict(X)
         df_model["Flow_pred"] = np.exp(df_model["log_Flow_pred"])
 
@@ -267,7 +261,6 @@ if uploaded_file:
         st.write("#### 予測結果")
         st.write(df_model[["Origin", "Destination", "Flow", "Flow_pred"]])
 
-        # ダウンロード
         buffer = io.BytesIO()
         df_model.to_excel(buffer, index=False)
         buffer.seek(0)
@@ -278,9 +271,8 @@ if uploaded_file:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-
     elif model_choice == "小売引力モデル":
-        # 条件に合うデータを抜き出し
+        # 以下、小売引力モデルの処理は既存のまま
         df_model = df_fixed[
             (df_fixed["Flow"] > 0)
             & (df_fixed["Distance"] > 0)
@@ -295,17 +287,12 @@ if uploaded_file:
         X = sm.add_constant(X)
         y = df_model["log_Flow"]
 
-        # OLS推定
         model = sm.OLS(y, X).fit()
 
-        # 推定パラメータ
         b0 = model.params.get('const', 0.0)
         b_popD = model.params.get('log_PopD', 0.0)
         b_dist = model.params.get('log_Distance', 0.0)
 
-        # -----------------------------------------------------
-        # (B1) 予測されたモデル式
-        # -----------------------------------------------------
         st.markdown("### 予測されたモデル式")
         st.latex(r'''
         \begin{aligned}
@@ -325,7 +312,6 @@ if uploaded_file:
         \end{aligned}
         ''' % (b0, b_popD, b_dist))
 
-        # (B2) 推定結果の評価
         df_model["log_Flow_pred"] = model.predict(X)
         df_model["Flow_pred"] = np.exp(df_model["log_Flow_pred"])
 
@@ -359,7 +345,6 @@ if uploaded_file:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-
     else:
         # -----------------------------------------------------------
         # (C) エントロピー最大化モデル
@@ -371,21 +356,24 @@ if uploaded_file:
 
         beta_opt, se_beta, t_val, p_val, nobs, df_resid, res = entropy_model_regression(df_model)
 
-        # -----------------------------------------------------
-        # (C1) 予測されたモデル式（**数式のみ修正**）
-        # -----------------------------------------------------
         st.markdown("### 予測されたモデル式")
+
+        # (C1) モデル式: ベータと T_i の部分を修正
         st.latex(r'''
         \begin{aligned}
         \mathrm{FlowPred}(i \to j) 
         &= T_i \;\times\;
-           \frac{\exp\!\bigl(-\,\beta \times \mathrm{Distance}_{ij}\bigr)}
-                {\displaystyle \sum_{k}\exp\!\bigl(-\,\beta \times \mathrm{Distance}_{ik}\bigr)}
+           \frac{\exp\!\bigl(-\,\mathrm{ベータ} \times \mathrm{Distance}_{ij}\bigr)}
+                {\displaystyle \sum_{k}\exp\!\bigl(-\,\mathrm{ベータ} \times \mathrm{Distance}_{ik}\bigr)}
         \end{aligned}
         ''')
-        # 文章や \beta の値が崩れにくいよう markdown と LaTeX を分ける
-        st.markdown(r"ここで、\( T_i = \sum_{j}\mathrm{Flow}(i \to j) \) である。")
-        st.markdown(f"推定された \\(\\beta\\) の値は **{beta_opt:.4f}** である。")
+        # T_i のみ表示（ここで、... である。の文言を削除）
+        st.latex(r'''
+        T_i = \sum_{j}\mathrm{Flow}(i \to j)
+        ''')
+
+        # ベータの値 (カタカナに変更)
+        st.write(f"推定されたベータの値は **{beta_opt:.4f}** です。")
 
         # (C2) フロー予測と評価
         origins = df_model["Origin"].unique()
