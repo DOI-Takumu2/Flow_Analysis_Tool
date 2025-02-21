@@ -43,18 +43,54 @@ import numpy as np
 import math
 import statsmodels.api as sm
 from scipy.optimize import minimize
+import io
 
 # タイトル
 st.title("Gravity Model & Entropy Maximization Model")
 
+# =============================================================================
+# サンプルExcelダウンロード用関数
+# =============================================================================
+def create_sample_excel():
+    """
+    必要な列名だけが入った空のDataFrameをExcelファイルに変換し、バイナリデータを返す。
+    """
+    columns = [
+        "Origin",
+        "Destination",
+        "Distance",
+        "Population_Origin",
+        "Population_Destination",
+        "Flow"
+    ]
+    df_template = pd.DataFrame(columns=columns)
+    # Excel出力
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_template.to_excel(writer, index=False)
+    return output.getvalue()
+
+# サイドバーにサンプルExcelのダウンロードボタンを設置
+st.sidebar.subheader("サンプルExcelファイル")
+st.sidebar.download_button(
+    label="サンプルExcelをダウンロード",
+    data=create_sample_excel(),
+    file_name="sample_template.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+# =============================================================================
 # ファイルアップロード
+# =============================================================================
 st.sidebar.header("ファイルをアップロード")
 uploaded_file = st.sidebar.file_uploader("Excelファイルをアップロード", type=["xlsx"])
 
 # モデル選択
 model_choice = st.sidebar.radio("分析モデルを選択", ("グラビティモデル", "エントロピー最大化モデル"))
 
+# =============================================================================
 # データのチェック関数
+# =============================================================================
 def validate_data(df):
     required_columns = ["Origin", "Destination", "Distance", 
                         "Population_Origin", "Population_Destination", "Flow"]
@@ -94,8 +130,11 @@ def validate_data(df):
 
     return True
 
-# データ読み込み
+# =============================================================================
+# メイン処理
+# =============================================================================
 if uploaded_file:
+    # アップロードデータを読み込み
     df = pd.read_excel(uploaded_file)
 
     # バリデーション
@@ -105,6 +144,9 @@ if uploaded_file:
     st.write("### アップロードされたデータ")
     st.write(df)
 
+    # ------------------------------------------------------------------------------
+    # グラビティモデル
+    # ------------------------------------------------------------------------------
     if model_choice == "グラビティモデル":
         st.subheader("グラビティモデルの結果")
 
@@ -158,6 +200,9 @@ if uploaded_file:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
+    # ------------------------------------------------------------------------------
+    # エントロピー最大化モデル
+    # ------------------------------------------------------------------------------
     elif model_choice == "エントロピー最大化モデル":
         st.subheader("エントロピー最大化モデルの結果")
 
@@ -172,7 +217,7 @@ if uploaded_file:
         def objective(beta):
             mse_list = []
             for o in origins:
-                # 発地点 o からみた分母（全目的地に対する exp(-beta*distance)）
+                # 発地点 o の分母（全目的地に対する exp(-beta*distance)）
                 denom = sum(
                     math.exp(-beta * df.loc[(df["Origin"] == o) & (df["Destination"] == d), "Distance"].values[0])
                     for d in destinations if ((df["Origin"] == o) & (df["Destination"] == d)).any()
