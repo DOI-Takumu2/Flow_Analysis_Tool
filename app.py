@@ -6,7 +6,7 @@ import statsmodels.api as sm
 from scipy.optimize import minimize
 from scipy.stats import t as t_dist
 import io
-#import openpyxl  # 必要ならインポート
+# import openpyxl  # 必要に応じてインストール＆インポート
 
 # =============================================================================
 # 1) レイアウト
@@ -46,6 +46,7 @@ st.markdown("""
 <code>Flow</code>（流動量）
 </p>
 """, unsafe_allow_html=True)
+
 
 # =============================================================================
 # 2) サンプルExcelダウンロード
@@ -176,66 +177,23 @@ def entropy_model_regression(df):
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
 
+    # 1) 列名バリデ
     if not validate_columns(df):
         st.stop()
 
+    # 2) 欠損補完
     df_fixed, fixed_count = fix_data(df)
     if fixed_count > 0:
         st.warning(f"{int(fixed_count)} 個のデータに不備があったため調整しました（補完・平均埋めなど）。")
 
-    # --- アップロード後のデータ表示 ---
     st.write("### アップロードされたデータ（補完後）")
     st.write(df_fixed)
 
-    # ===============================
-    # (A) モデル式を先に表示
-    # ===============================
-    st.markdown("### 予測されたモデル式")
-
-    if model_choice == "グラビティモデル":
-        # グラビティモデル
-        st.latex(r'''
-            \log(\text{Flow})
-            = \beta_0
-              + \beta_1 \,\log(\text{Distance})
-              + \beta_2 \,\log(\text{Population\_Origin})
-              + \beta_3 \,\log(\text{Population\_Destination})
-            \quad\longrightarrow\quad
-            \text{Flow}
-            = \exp(\beta_0)\,\times
-              \text{Distance}^{\beta_1}\,\times
-              \text{Population\_Origin}^{\beta_2}\,\times
-              \text{Population\_Destination}^{\beta_3}.
-        ''')
-    elif model_choice == "小売引力モデル":
-        # 小売引力モデル
-        st.latex(r'''
-            \log(\text{Flow})
-            = \beta_0
-              + \beta_1 \,\log(\text{Population\_Destination})
-              + \beta_2 \,\log(\text{Distance})
-            \quad\longrightarrow\quad
-            \text{Flow}
-            = \exp(\beta_0)\,\times
-              \text{Population\_Destination}^{\beta_1}\,\times
-              \text{Distance}^{\beta_2}.
-        ''')
-    else:
-        # エントロピー最大化モデル
-        st.latex(r'''
-            \text{FlowPred}(i \to j)
-            = T_i\,\times\,
-              \frac{\exp\bigl(-\beta \times \text{Distance}_{ij}\bigr)}
-                   {\sum_{k}\exp\bigl(-\beta \times \text{Distance}_{ik}\bigr)}
-        ''')
-        st.markdown(r"ここで、\( T_i = \sum_{j}\text{Flow}(i \to j) \) である。")
-
     # -----------------------------------------------------------
-    # (1) グラビティモデル (OLS)
+    # (A) 各モデルの推定・パラメータ取得
     # -----------------------------------------------------------
     if model_choice == "グラビティモデル":
-        st.subheader("グラビティモデルの結果")
-
+        # 条件に合うデータを抜き出し
         df_model = df_fixed[
             (df_fixed["Flow"] > 0)
             & (df_fixed["Distance"] > 0)
@@ -252,13 +210,46 @@ if uploaded_file:
         X = sm.add_constant(X)
         y = df_model["log_Flow"]
 
+        # OLS推定
         model = sm.OLS(y, X).fit()
+
+        # 推定パラメータを変数に格納
+        b0 = model.params.get('const', 0.0)
+        b_dist = model.params.get('log_Distance', 0.0)
+        b_popO = model.params.get('log_PopO', 0.0)
+        b_popD = model.params.get('log_PopD', 0.0)
+
+        # -----------------------------------------------------
+        # (A1) 予測されたモデル式を表示
+        # -----------------------------------------------------
+        st.markdown("### 予測されたモデル式")
+        st.latex(r'''
+        \begin{aligned}
+        \log(\text{Flow}) 
+        &= %.4f \\
+        &\quad + (%.4f)\,\log(\text{Distance}) \\
+        &\quad + (%.4f)\,\log(\text{Population\_Origin}) \\
+        &\quad + (%.4f)\,\log(\text{Population\_Destination})
+        \end{aligned}
+        ''' % (b0, b_dist, b_popO, b_popD))
+
+        st.latex(r'''
+        \begin{aligned}
+        \text{Flow}
+        &= \exp(%.4f)\\
+        &\quad\times \text{Distance}^{%.4f} \\
+        &\quad\times \text{Population\_Origin}^{%.4f} \\
+        &\quad\times \text{Population\_Destination}^{%.4f}
+        \end{aligned}
+        ''' % (b0, b_dist, b_popO, b_popD))
+
+        # (A2) 回帰モデルの結果評価
         df_model["log_Flow_pred"] = model.predict(X)
         df_model["Flow_pred"] = np.exp(df_model["log_Flow_pred"])
 
+        st.subheader("グラビティモデルの結果")
         st.write(model.summary())
 
-        # 評価指標
         residuals = df_model["Flow"] - df_model["Flow_pred"]
         mse = np.mean(residuals**2)
         rmse = np.sqrt(mse)
@@ -276,7 +267,7 @@ if uploaded_file:
         st.write("#### 予測結果")
         st.write(df_model[["Origin", "Destination", "Flow", "Flow_pred"]])
 
-        # --- Excelダウンロード (in-memory 例) ---
+        # ダウンロード
         buffer = io.BytesIO()
         df_model.to_excel(buffer, index=False)
         buffer.seek(0)
@@ -287,12 +278,9 @@ if uploaded_file:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    # -----------------------------------------------------------
-    # (2) 小売引力モデル (OLS)
-    # -----------------------------------------------------------
-    elif model_choice == "小売引力モデル":
-        st.subheader("小売引力モデルの結果")
 
+    elif model_choice == "小売引力モデル":
+        # 条件に合うデータを抜き出し
         df_model = df_fixed[
             (df_fixed["Flow"] > 0)
             & (df_fixed["Distance"] > 0)
@@ -307,10 +295,41 @@ if uploaded_file:
         X = sm.add_constant(X)
         y = df_model["log_Flow"]
 
+        # OLS推定
         model = sm.OLS(y, X).fit()
+
+        # 推定パラメータ
+        b0 = model.params.get('const', 0.0)
+        b_popD = model.params.get('log_PopD', 0.0)
+        b_dist = model.params.get('log_Distance', 0.0)
+
+        # -----------------------------------------------------
+        # (B1) 予測されたモデル式
+        # -----------------------------------------------------
+        st.markdown("### 予測されたモデル式")
+        st.latex(r'''
+        \begin{aligned}
+        \log(\text{Flow}) 
+        &= %.4f \\
+        &\quad + (%.4f)\,\log(\text{Population\_Destination}) \\
+        &\quad + (%.4f)\,\log(\text{Distance})
+        \end{aligned}
+        ''' % (b0, b_popD, b_dist))
+
+        st.latex(r'''
+        \begin{aligned}
+        \text{Flow} 
+        &= \exp(%.4f) \\
+        &\quad\times \text{Population\_Destination}^{%.4f} \\
+        &\quad\times \text{Distance}^{%.4f}
+        \end{aligned}
+        ''' % (b0, b_popD, b_dist))
+
+        # (B2) 推定結果の評価
         df_model["log_Flow_pred"] = model.predict(X)
         df_model["Flow_pred"] = np.exp(df_model["log_Flow_pred"])
 
+        st.subheader("小売引力モデルの結果")
         st.write(model.summary())
 
         residuals = df_model["Flow"] - df_model["Flow_pred"]
@@ -340,12 +359,11 @@ if uploaded_file:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    # -----------------------------------------------------------
-    # (3) エントロピー最大化モデル
-    # -----------------------------------------------------------
-    else:
-        st.subheader("エントロピー最大化モデルの結果")
 
+    else:
+        # -----------------------------------------------------------
+        # (C) エントロピー最大化モデル
+        # -----------------------------------------------------------
         df_model = df_fixed[
             (df_fixed["Flow"] > 0)
             & (df_fixed["Distance"] > 0)
@@ -353,6 +371,22 @@ if uploaded_file:
 
         beta_opt, se_beta, t_val, p_val, nobs, df_resid, res = entropy_model_regression(df_model)
 
+        # -----------------------------------------------------
+        # (C1) 予測されたモデル式
+        # -----------------------------------------------------
+        st.markdown("### 予測されたモデル式")
+        st.latex(r'''
+        \begin{aligned}
+        \text{FlowPred}(i \to j) 
+        &= T_i \,\times\, 
+           \frac{\exp\bigl(-\,\beta \,\times\, \text{Distance}_{ij}\bigr)}
+                {\sum_{k}\,\exp\bigl(-\,\beta \,\times\, \text{Distance}_{ik}\bigr)} 
+        \end{aligned}
+        ''')
+        st.write("ここで、 \( T_i = \sum_{j}\text{Flow}(i \to j) \) 。")
+        st.write(f"推定された \\(\\beta\\) の値は **{beta_opt:.4f}** である。")
+
+        # (C2) フロー予測と評価
         origins = df_model["Origin"].unique()
         destinations = df_model["Destination"].unique()
         origin_flows = df_model.groupby("Origin")["Flow"].sum().to_dict()
@@ -368,7 +402,6 @@ if uploaded_file:
         df_model["Flow_pred"] = df_model.apply(calculate_predicted_flow, axis=1)
         df_model["Residual"] = df_model["Flow"] - df_model["Flow_pred"]
 
-        # 評価指標
         sse = np.sum(df_model["Residual"]**2)
         mse = np.mean(df_model["Residual"]**2)
         rmse = np.sqrt(mse)
@@ -376,12 +409,9 @@ if uploaded_file:
         ss_tot = np.sum((df_model["Flow"] - np.mean(df_model["Flow"]))**2)
         r2 = 1 - (sse / ss_tot)
 
-        # 近似的な回帰サマリ表示
-        st.markdown("**詳細な結果（近似的な回帰サマリ）**")
-        st.write("※ バージョン差異により最適化メソッドや反復回数は省略")
+        st.subheader("エントロピー最大化モデルの結果")
+        st.markdown("**近似的な回帰サマリ** (1パラメータ)")
 
-        st.markdown("---")
-        st.markdown("**パラメータ推定値 (β)**")
         col1, col2, col3, col4 = st.columns([1,1,1,1])
         col1.metric("beta", f"{beta_opt:.4f}")
         col2.metric("std err", f"{se_beta:.4f}" if not np.isnan(se_beta) else "NaN")
