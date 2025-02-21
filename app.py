@@ -68,9 +68,9 @@ def create_sample_excel():
     return output.getvalue()
 
 
-st.subheader("サンプルExcelファイルのダウンロード")
+st.subheader("列名記入済みExcelファイルのダウンロード")
 st.download_button(
-    label="サンプルExcelをダウンロード",
+    label="列名記入済みExcelをダウンロード",
     data=create_sample_excel(),
     file_name="sample_template.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
