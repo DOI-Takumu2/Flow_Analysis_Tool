@@ -6,6 +6,7 @@ import statsmodels.api as sm
 from scipy.optimize import minimize
 from scipy.stats import t as t_dist
 import io
+#import openpyxl  # 必要ならば追加
 
 # =============================================================================
 # 1) HTMLやMarkdownでレイアウトを整える
@@ -46,14 +47,10 @@ st.markdown("""
 </p>
 """, unsafe_allow_html=True)
 
-
 # =============================================================================
 # 2) サンプルExcelのダウンロード機能
 # =============================================================================
 def create_sample_excel():
-    """
-    必要な列名だけが入った空のDataFrameをExcelファイルに変換し、バイナリデータを返す。
-    """
     columns = [
         "Origin",
         "Destination",
@@ -75,63 +72,40 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
-
 # =============================================================================
 # 3) Excelファイルのアップロード
 # =============================================================================
 st.subheader("ファイルをアップロード")
 uploaded_file = st.file_uploader("Excelファイルをアップロード", type=["xlsx"])
 
-
 # =============================================================================
 # 4) モデル選択
 # =============================================================================
 model_choice = st.radio("分析モデルを選択", ("グラビティモデル", "小売引力モデル", "エントロピー最大化モデル"))
 
-
 # =============================================================================
 # 5) 欠損や型違いのデータを自動調整する関数
 # =============================================================================
 def fix_data(df):
-    """
-    - 数値型の列を to_numeric で強制変換（パース失敗は NaN に）
-    - Distance <= 0, Flow < 0, Population_Origin < 1, Population_Destination < 1 は NaN 扱い
-    - 線形補完 (interpolate) + 残った欠損は列平均で補完
-    - 補完した個数を返す
-    """
     numeric_cols = ["Distance", "Population_Origin", "Population_Destination", "Flow"]
-
-    # 数値変換 (失敗時は NaN)
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # 条件に合わない値は NaN に変換
     df.loc[df["Distance"] <= 0, "Distance"] = np.nan
     df.loc[df["Flow"] < 0, "Flow"] = np.nan
     df.loc[df["Population_Origin"] < 1, "Population_Origin"] = np.nan
     df.loc[df["Population_Destination"] < 1, "Population_Destination"] = np.nan
 
-    # 補完前の欠損数
     na_before = df.isna().sum().sum()
-
-    # 線形補完 (interpolate) ※Indexを基準にする簡易的な方法
     df = df.interpolate(method='linear', axis=0)
-
-    # 残った欠損は平均で埋める
     df = df.fillna(df.mean(numeric_only=True))
-
-    # 補完後の欠損数
     na_after = df.isna().sum().sum()
-
-    # 補完した数
     fixed_count = na_before - na_after
 
     return df, fixed_count
 
-
 # =============================================================================
 # 6) バリデーション
-#    - 列名チェックだけして、値の正負は fix_data() で補完済み扱いにする
 # =============================================================================
 def validate_columns(df):
     required_columns = [
@@ -145,11 +119,8 @@ def validate_columns(df):
         return False
     return True
 
-
 # =============================================================================
 # 7) エントロピー最大化モデル用: 疑似的な回帰サマリ情報を作る関数
-#    method="BFGS" で最適化し、res.hess_inv から標準誤差を近似
-#    ただしバージョンによっては hess_inv が存在しない可能性もある
 # =============================================================================
 def entropy_model_regression(df):
     origins = df["Origin"].unique()
@@ -161,59 +132,58 @@ def entropy_model_regression(df):
         sse = 0.0
         for o in origins:
             denom = 0.0
+            # 出発地 o の全到着地の exp(-beta*dist) を合計
             for d in destinations:
                 if ((df["Origin"] == o) & (df["Destination"] == d)).any():
                     dist = df.loc[(df["Origin"] == o) & (df["Destination"] == d), "Distance"].values[0]
                     denom += math.exp(-beta * dist)
+            # denom が 0 でなければフローの予測値を計算
             for d in destinations:
                 if ((df["Origin"] == o) & (df["Destination"] == d)).any():
                     dist = df.loc[(df["Origin"] == o) & (df["Destination"] == d), "Distance"].values[0]
                     obs = df.loc[(df["Origin"] == o) & (df["Destination"] == d), "Flow"].values[0]
-                    pred = origin_flows[o] * math.exp(-beta * dist) / denom
+                    pred = origin_flows[o] * math.exp(-beta * dist) / denom if denom != 0 else 0
                     sse += (obs - pred)**2
         return sse
 
+    # BFGS で最適化
     res = minimize(objective, x0=np.array([0.1]), method="BFGS")
     beta_opt = res.x[0]
 
-    # 標準誤差の計算 (近似)
+    # 標準誤差の推定
     var_beta = np.nan
     if hasattr(res, "hess_inv"):
-        # 1次元の場合は array( [[val]] ) か ただの float の可能性あり
-        hess_inv = res.hess_inv  
+        hess_inv = res.hess_inv
         if isinstance(hess_inv, np.ndarray):
             var_beta = hess_inv[0, 0]
         else:
-            # floatの場合
             var_beta = hess_inv
 
-    if var_beta is not None and var_beta>0:
+    if var_beta is not None and var_beta > 0:
         se_beta = np.sqrt(var_beta)
     else:
         se_beta = np.nan
 
-    df_resid = nobs - 1  # 仮定
+    df_resid = nobs - 1
     t_val = np.nan
     p_val = np.nan
-    if not np.isnan(se_beta) and se_beta>0:
+    if not np.isnan(se_beta) and se_beta > 0:
         t_val = beta_opt / se_beta
-        from scipy.stats import t as t_dist
         p_val = 2 * (1 - t_dist.cdf(abs(t_val), df_resid))
 
     return beta_opt, se_beta, t_val, p_val, nobs, df_resid, res
 
-
 # =============================================================================
-# 8) アップロード処理: 欠損を補完 → メッセージ表示 → 分析
+# 8) メイン処理
 # =============================================================================
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
 
-    # 列名チェック
+    # 列名の妥当性チェック
     if not validate_columns(df):
         st.stop()
 
-    # 欠損や不備を補完
+    # 欠損・異常値補完
     df_fixed, fixed_count = fix_data(df)
     if fixed_count > 0:
         st.warning(f"{int(fixed_count)} 個のデータに不備があったため調整しました（補完・平均埋めなど）。")
@@ -247,7 +217,6 @@ if uploaded_file:
         df_model["log_Flow_pred"] = model.predict(X)
         df_model["Flow_pred"] = np.exp(df_model["log_Flow_pred"])
 
-        # OLSサマリ
         st.write(model.summary())
 
         # 評価指標
@@ -268,15 +237,41 @@ if uploaded_file:
         st.write("#### 予測結果")
         st.write(df_model[["Origin", "Destination", "Flow", "Flow_pred"]])
 
+        # === 数式を表示 ===
+        params = model.params
+        b0 = params.get('const', 0.0)
+        b_dist = params.get('log_Distance', 0.0)
+        b_popO = params.get('log_PopO', 0.0)
+        b_popD = params.get('log_PopD', 0.0)
+
+        st.latex(r'''
+            \log(\text{Flow}) 
+            = %.4f
+              + (%.4f)\,\log(\text{Distance})
+              + (%.4f)\,\log(\text{Population\_Origin})
+              + (%.4f)\,\log(\text{Population\_Destination})
+        ''' % (b0, b_dist, b_popO, b_popD))
+
+        st.latex(r'''
+            \text{Flow}
+            = \exp(%.4f) 
+              \times \text{Distance}^{%.4f}
+              \times \text{Population\_Origin}^{%.4f}
+              \times \text{Population\_Destination}^{%.4f}
+        ''' % (b0, b_dist, b_popO, b_popD))
+
+        # 結果ダウンロード (in-memory 例)
         out_file = "gravity_model_result.xlsx"
-        df_model.to_excel(out_file, index=False)
-        with open(out_file, "rb") as f:
-            st.download_button(
-                label="結果をダウンロード",
-                data=f,
-                file_name=out_file,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        buffer = io.BytesIO()
+        df_model.to_excel(buffer, index=False)
+        buffer.seek(0)
+
+        st.download_button(
+            label="結果をダウンロード",
+            data=buffer,
+            file_name=out_file,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
     # -----------------------------------------------------------
     # (2) 小売引力モデル (OLS)
@@ -302,10 +297,8 @@ if uploaded_file:
         df_model["log_Flow_pred"] = model.predict(X)
         df_model["Flow_pred"] = np.exp(df_model["log_Flow_pred"])
 
-        # OLSサマリ
         st.write(model.summary())
 
-        # 評価指標
         residuals = df_model["Flow"] - df_model["Flow_pred"]
         mse = np.mean(residuals**2)
         rmse = np.sqrt(mse)
@@ -323,18 +316,40 @@ if uploaded_file:
         st.write("#### 予測結果")
         st.write(df_model[["Origin", "Destination", "Flow", "Flow_pred"]])
 
+        # === 数式を表示 ===
+        params = model.params
+        b0 = params.get('const', 0.0)
+        b_popD = params.get('log_PopD', 0.0)
+        b_dist = params.get('log_Distance', 0.0)
+
+        st.latex(r'''
+            \log(\text{Flow}) 
+            = %.4f
+              + (%.4f)\,\log(\text{Population\_Destination})
+              + (%.4f)\,\log(\text{Distance})
+        ''' % (b0, b_popD, b_dist))
+
+        st.latex(r'''
+            \text{Flow} 
+            = \exp(%.4f)
+              \times \text{Population\_Destination}^{%.4f}
+              \times \text{Distance}^{%.4f}
+        ''' % (b0, b_popD, b_dist))
+
         out_file = "retail_gravity_result.xlsx"
-        df_model.to_excel(out_file, index=False)
-        with open(out_file, "rb") as f:
-            st.download_button(
-                label="結果をダウンロード",
-                data=f,
-                file_name=out_file,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        buffer = io.BytesIO()
+        df_model.to_excel(buffer, index=False)
+        buffer.seek(0)
+
+        st.download_button(
+            label="結果をダウンロード",
+            data=buffer,
+            file_name=out_file,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
     # -----------------------------------------------------------
-    # (3) エントロピー最大化モデル + 疑似的回帰サマリ
+    # (3) エントロピー最大化モデル
     # -----------------------------------------------------------
     else:
         st.subheader("エントロピー最大化モデルの結果")
@@ -344,10 +359,8 @@ if uploaded_file:
             & (df_fixed["Distance"] > 0)
         ].copy()
 
-        # 1) beta を BFGS法で最適化し、疑似的な標準誤差を推定
         beta_opt, se_beta, t_val, p_val, nobs, df_resid, res = entropy_model_regression(df_model)
 
-        # 2) Flow_pred を計算
         origins = df_model["Origin"].unique()
         destinations = df_model["Destination"].unique()
         origin_flows = df_model.groupby("Origin")["Flow"].sum().to_dict()
@@ -363,7 +376,6 @@ if uploaded_file:
         df_model["Flow_pred"] = df_model.apply(calculate_predicted_flow, axis=1)
         df_model["Residual"] = df_model["Flow"] - df_model["Flow_pred"]
 
-        # 3) SSE, MSE, R²などの計算
         sse = np.sum(df_model["Residual"]**2)
         mse = np.mean(df_model["Residual"]**2)
         rmse = np.sqrt(mse)
@@ -371,14 +383,11 @@ if uploaded_file:
         ss_tot = np.sum((df_model["Flow"] - np.mean(df_model["Flow"]))**2)
         r2 = 1 - (sse / ss_tot)
 
-        # 4) 疑似的回帰サマリを表示 (method, nit は参照せず安定運用)
         st.markdown("**詳細な結果（近似的な回帰サマリ）**")
         st.write("※ バージョン差異により最適化メソッドや反復回数は省略")
 
         st.markdown("---")
-
-        st.markdown("**パラメータ推定値**")
-        st.write("※ エントロピー最大化モデルは1パラメータ (β) のみです。")
+        st.markdown("**パラメータ推定値 (β)**")
         col1, col2, col3, col4 = st.columns([1,1,1,1])
         col1.metric("beta", f"{beta_opt:.4f}")
         col2.metric("std err", f"{se_beta:.4f}" if not np.isnan(se_beta) else "NaN")
@@ -386,7 +395,6 @@ if uploaded_file:
         col4.metric("p 値", f"{p_val:.3f}" if not np.isnan(p_val) else "NaN")
 
         st.markdown("---")
-
         st.markdown("**モデル全体の評価指標**")
         st.write(f"- No. Observations: {nobs}")
         st.write(f"- SSE: {sse:.3f}")
@@ -395,26 +403,36 @@ if uploaded_file:
         st.write(f"- MAE: {mae:.3f}")
         st.write(f"- R²:  {r2:.3f}")
 
-        st.markdown("---")
-
         st.write("#### 予測結果")
         st.write(df_model[["Origin", "Destination", "Flow", "Flow_pred"]])
 
+        # === 数式を表示 ===
+        st.markdown("#### 推定されたモデル式")
+        st.latex(r'''
+            \text{FlowPred}(i \to j) 
+            = T_i \,\times\, \frac{\exp\bigl(-\beta\,\cdot\, \text{Distance}_{ij}\bigr)}
+                                  {\sum_{k}\exp\bigl(-\beta\,\cdot\,\text{Distance}_{ik}\bigr)}
+        ''')
+        st.write("ここで、", r"\( T_i = \sum_{j}\text{Flow}(i \to j) \)", "である。")
+        st.markdown(f"推定された \\( \\beta \\) の値は **{beta_opt:.4f}** である。")
+
         out_file = "entropy_model_result.xlsx"
-        df_model.to_excel(out_file, index=False)
-        with open(out_file, "rb") as f:
-            st.download_button(
-                label="結果をダウンロード",
-                data=f,
-                file_name=out_file,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        buffer = io.BytesIO()
+        df_model.to_excel(buffer, index=False)
+        buffer.seek(0)
+
+        st.download_button(
+            label="結果をダウンロード",
+            data=buffer,
+            file_name=out_file,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 # フッター
 st.markdown("""
 <hr />
 <small>
   本ツール使用による成果物を公表する際は、以下の例のように引用していただけると嬉しいです。<br/>
-  DOI, Takumu (2025). Flow Analysis Tool [Computer software]. Usage date: YYYY-MM-DD."
+  DOI, Takumu (2025). Flow Analysis Tool [Computer software]. Usage date: YYYY-MM-DD.
 </small>
 """, unsafe_allow_html=True)
