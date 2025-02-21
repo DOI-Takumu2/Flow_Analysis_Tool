@@ -1,5 +1,4 @@
 # グラビティ－エントロピーモデル［gravity-entropy-model］
-# Gravity & Entropy Maximization Model
 
 ## 概要
 本アプリケーションは、**グラビティモデル** と **エントロピー最大化モデル** の流動分析を実装できます。  
