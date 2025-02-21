@@ -372,19 +372,20 @@ if uploaded_file:
         beta_opt, se_beta, t_val, p_val, nobs, df_resid, res = entropy_model_regression(df_model)
 
         # -----------------------------------------------------
-        # (C1) 予測されたモデル式
+        # (C1) 予測されたモデル式（**数式のみ修正**）
         # -----------------------------------------------------
         st.markdown("### 予測されたモデル式")
         st.latex(r'''
         \begin{aligned}
-        \text{FlowPred}(i \to j) 
-        &= T_i \,\times\, 
-           \frac{\exp\bigl(-\,\beta \,\times\, \text{Distance}_{ij}\bigr)}
-                {\sum_{k}\,\exp\bigl(-\,\beta \,\times\, \text{Distance}_{ik}\bigr)} 
+        \mathrm{FlowPred}(i \to j) 
+        &= T_i \;\times\;
+           \frac{\exp\!\bigl(-\,\beta \times \mathrm{Distance}_{ij}\bigr)}
+                {\displaystyle \sum_{k}\exp\!\bigl(-\,\beta \times \mathrm{Distance}_{ik}\bigr)}
         \end{aligned}
         ''')
-        st.write("ここで、 \( T_i = \sum_{j}\text{Flow}(i \to j) \) 。")
-        st.write(f"推定された \\(\\beta\\) の値は **{beta_opt:.4f}** である。")
+        # 文章や \beta の値が崩れにくいよう markdown と LaTeX を分ける
+        st.markdown(r"ここで、\( T_i = \sum_{j}\mathrm{Flow}(i \to j) \) である。")
+        st.markdown(f"推定された \\(\\beta\\) の値は **{beta_opt:.4f}** である。")
 
         # (C2) フロー予測と評価
         origins = df_model["Origin"].unique()
