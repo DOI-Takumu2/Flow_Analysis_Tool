@@ -148,34 +148,23 @@ def validate_columns(df):
 
 # =============================================================================
 # 7) エントロピー最大化モデル用: 疑似的な回帰サマリ情報を作る関数
-#    BFGS 法で最適化し、逆Hessian (res.hess_inv) から標準誤差を近似
+#    method="BFGS" で最適化し、res.hess_inv から標準誤差を近似
+#    ただしバージョンによっては hess_inv が存在しない可能性もある
 # =============================================================================
 def entropy_model_regression(df):
-    """
-    引数: df には (Flow>0, Distance>0) のデータのみ
-    戻り値:
-      - beta_opt: 推定されたbeta
-      - se_beta:  近似的な標準誤差
-      - t_val:    t値
-      - p_val:    p値
-      - nobs:     データ数
-    """
     origins = df["Origin"].unique()
     destinations = df["Destination"].unique()
     origin_flows = df.groupby("Origin")["Flow"].sum().to_dict()
     nobs = len(df)
 
     def objective(beta):
-        # SSEを返す
         sse = 0.0
         for o in origins:
             denom = 0.0
-            # 分母
             for d in destinations:
                 if ((df["Origin"] == o) & (df["Destination"] == d)).any():
                     dist = df.loc[(df["Origin"] == o) & (df["Destination"] == d), "Distance"].values[0]
                     denom += math.exp(-beta * dist)
-            # SSE
             for d in destinations:
                 if ((df["Origin"] == o) & (df["Destination"] == d)).any():
                     dist = df.loc[(df["Origin"] == o) & (df["Destination"] == d), "Distance"].values[0]
@@ -184,26 +173,35 @@ def entropy_model_regression(df):
                     sse += (obs - pred)**2
         return sse
 
-    # BFGSで最適化
     res = minimize(objective, x0=np.array([0.1]), method="BFGS")
     beta_opt = res.x[0]
 
-    # 逆Hessianから分散を推定
-    if res.hess_inv.ndim == 2:
-        var_beta = res.hess_inv[0,0]
+    # 標準誤差の計算 (近似)
+    var_beta = np.nan
+    if hasattr(res, "hess_inv"):
+        # 1次元の場合は array( [[val]] ) か ただの float の可能性あり
+        hess_inv = res.hess_inv  
+        if isinstance(hess_inv, np.ndarray):
+            var_beta = hess_inv[0, 0]
+        else:
+            # floatの場合
+            var_beta = hess_inv
+
+    if var_beta is not None and var_beta>0:
+        se_beta = np.sqrt(var_beta)
     else:
-        var_beta = res.hess_inv  # 1次元の場合
+        se_beta = np.nan
 
-    se_beta = np.sqrt(var_beta) if var_beta>0 else float('nan')
-
-    # 自由度 (単回帰に近い1パラメータなので nobs-1 とする)
-    df_resid = nobs - 1
-    # t値: beta / se
-    t_val = beta_opt / se_beta if se_beta>0 else float('nan')
-    # 両側検定のp値
-    p_val = 2 * (1 - t_dist.cdf(abs(t_val), df_resid)) if (not np.isnan(t_val) and df_resid>0) else float('nan')
+    df_resid = nobs - 1  # 仮定
+    t_val = np.nan
+    p_val = np.nan
+    if not np.isnan(se_beta) and se_beta>0:
+        t_val = beta_opt / se_beta
+        from scipy.stats import t as t_dist
+        p_val = 2 * (1 - t_dist.cdf(abs(t_val), df_resid))
 
     return beta_opt, se_beta, t_val, p_val, nobs, df_resid, res
+
 
 # =============================================================================
 # 8) アップロード処理: 欠損を補完 → メッセージ表示 → 分析
@@ -249,7 +247,7 @@ if uploaded_file:
         df_model["log_Flow_pred"] = model.predict(X)
         df_model["Flow_pred"] = np.exp(df_model["log_Flow_pred"])
 
-        # 結果表示（OLSサマリ）
+        # OLSサマリ
         st.write(model.summary())
 
         # 評価指標
@@ -304,7 +302,7 @@ if uploaded_file:
         df_model["log_Flow_pred"] = model.predict(X)
         df_model["Flow_pred"] = np.exp(df_model["log_Flow_pred"])
 
-        # 結果表示（OLSサマリ）
+        # OLSサマリ
         st.write(model.summary())
 
         # 評価指標
@@ -338,7 +336,7 @@ if uploaded_file:
     # -----------------------------------------------------------
     # (3) エントロピー最大化モデル + 疑似的回帰サマリ
     # -----------------------------------------------------------
-    else:  # エントロピー最大化モデル
+    else:
         st.subheader("エントロピー最大化モデルの結果")
 
         df_model = df_fixed[
@@ -346,12 +344,10 @@ if uploaded_file:
             & (df_fixed["Distance"] > 0)
         ].copy()
 
-        # ================================
-        # 8-1) 疑似回帰サマリの取得
-        # ================================
+        # 1) beta を BFGS法で最適化し、疑似的な標準誤差を推定
         beta_opt, se_beta, t_val, p_val, nobs, df_resid, res = entropy_model_regression(df_model)
 
-        # 予測Flow
+        # 2) Flow_pred を計算
         origins = df_model["Origin"].unique()
         destinations = df_model["Destination"].unique()
         origin_flows = df_model.groupby("Origin")["Flow"].sum().to_dict()
@@ -367,7 +363,7 @@ if uploaded_file:
         df_model["Flow_pred"] = df_model.apply(calculate_predicted_flow, axis=1)
         df_model["Residual"] = df_model["Flow"] - df_model["Flow_pred"]
 
-        # SSE, MSE, R²などの計算
+        # 3) SSE, MSE, R²などの計算
         sse = np.sum(df_model["Residual"]**2)
         mse = np.mean(df_model["Residual"]**2)
         rmse = np.sqrt(mse)
@@ -375,12 +371,9 @@ if uploaded_file:
         ss_tot = np.sum((df_model["Flow"] - np.mean(df_model["Flow"]))**2)
         r2 = 1 - (sse / ss_tot)
 
-        # ================================
-        # 8-2) 疑似的な「回帰サマリ」表示
-        # ================================
+        # 4) 疑似的回帰サマリを表示 (method, nit は参照せず安定運用)
         st.markdown("**詳細な結果（近似的な回帰サマリ）**")
-        st.write(f"最適化メソッド: {res.method}")
-        st.write(f"最終反復回数: {res.nit}, 収束判定: {res.message}")
+        st.write("※ バージョン差異により最適化メソッドや反復回数は省略")
 
         st.markdown("---")
 
@@ -404,13 +397,9 @@ if uploaded_file:
 
         st.markdown("---")
 
-        # ================================
-        # 8-3) 結果テーブル表示
-        # ================================
         st.write("#### 予測結果")
         st.write(df_model[["Origin", "Destination", "Flow", "Flow_pred"]])
 
-        # Excel出力
         out_file = "entropy_model_result.xlsx"
         df_model.to_excel(out_file, index=False)
         with open(out_file, "rb") as f:
@@ -421,7 +410,7 @@ if uploaded_file:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-# お好みでフッターなどを表示
+# フッター
 st.markdown("""
 <hr />
 <small>
