@@ -68,7 +68,6 @@ def create_sample_excel():
     return output.getvalue()
 
 
-st.subheader("列名記入済みExcelファイルのダウンロード")
 st.download_button(
     label="列名記入済みExcelをダウンロード",
     data=create_sample_excel(),
