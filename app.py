@@ -11,9 +11,7 @@ import io
 # =============================================================================
 st.markdown("""
 <h1 style="text-align:center;">流動分析ツール</h1>
-<h3 style="text-align:center;">[グラビティモデル]</h3>
-<h3 style="text-align:center;">[小売引力モデル]</h3>
-<h3 style="text-align:center;">[エントロピー最大化モデル]</h3>
+<h3 style="text-align:center;">[グラビティ/小売引力/エントロピー最大化モデル]</h3>
 
 <p style="text-align:right;">
   土居拓務（<strong>DOI, Takumu</strong>)
