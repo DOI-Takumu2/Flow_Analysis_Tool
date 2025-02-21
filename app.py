@@ -4,6 +4,7 @@ import numpy as np
 import math
 import statsmodels.api as sm
 from scipy.optimize import minimize
+from scipy.stats import t as t_dist
 import io
 
 # =============================================================================
@@ -66,7 +67,6 @@ def create_sample_excel():
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df_template.to_excel(writer, index=False)
     return output.getvalue()
-
 
 st.download_button(
     label="列名記入済みExcelをダウンロード",
@@ -147,7 +147,66 @@ def validate_columns(df):
 
 
 # =============================================================================
-# 7) アップロード処理: 欠損を補完 → メッセージ表示 → 分析へ
+# 7) エントロピー最大化モデル用: 疑似的な回帰サマリ情報を作る関数
+#    BFGS 法で最適化し、逆Hessian (res.hess_inv) から標準誤差を近似
+# =============================================================================
+def entropy_model_regression(df):
+    """
+    引数: df には (Flow>0, Distance>0) のデータのみ
+    戻り値:
+      - beta_opt: 推定されたbeta
+      - se_beta:  近似的な標準誤差
+      - t_val:    t値
+      - p_val:    p値
+      - nobs:     データ数
+    """
+    origins = df["Origin"].unique()
+    destinations = df["Destination"].unique()
+    origin_flows = df.groupby("Origin")["Flow"].sum().to_dict()
+    nobs = len(df)
+
+    def objective(beta):
+        # SSEを返す
+        sse = 0.0
+        for o in origins:
+            denom = 0.0
+            # 分母
+            for d in destinations:
+                if ((df["Origin"] == o) & (df["Destination"] == d)).any():
+                    dist = df.loc[(df["Origin"] == o) & (df["Destination"] == d), "Distance"].values[0]
+                    denom += math.exp(-beta * dist)
+            # SSE
+            for d in destinations:
+                if ((df["Origin"] == o) & (df["Destination"] == d)).any():
+                    dist = df.loc[(df["Origin"] == o) & (df["Destination"] == d), "Distance"].values[0]
+                    obs = df.loc[(df["Origin"] == o) & (df["Destination"] == d), "Flow"].values[0]
+                    pred = origin_flows[o] * math.exp(-beta * dist) / denom
+                    sse += (obs - pred)**2
+        return sse
+
+    # BFGSで最適化
+    res = minimize(objective, x0=np.array([0.1]), method="BFGS")
+    beta_opt = res.x[0]
+
+    # 逆Hessianから分散を推定
+    if res.hess_inv.ndim == 2:
+        var_beta = res.hess_inv[0,0]
+    else:
+        var_beta = res.hess_inv  # 1次元の場合
+
+    se_beta = np.sqrt(var_beta) if var_beta>0 else float('nan')
+
+    # 自由度 (単回帰に近い1パラメータなので nobs-1 とする)
+    df_resid = nobs - 1
+    # t値: beta / se
+    t_val = beta_opt / se_beta if se_beta>0 else float('nan')
+    # 両側検定のp値
+    p_val = 2 * (1 - t_dist.cdf(abs(t_val), df_resid)) if (not np.isnan(t_val) and df_resid>0) else float('nan')
+
+    return beta_opt, se_beta, t_val, p_val, nobs, df_resid, res
+
+# =============================================================================
+# 8) アップロード処理: 欠損を補完 → メッセージ表示 → 分析
 # =============================================================================
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
@@ -158,8 +217,6 @@ if uploaded_file:
 
     # 欠損や不備を補完
     df_fixed, fixed_count = fix_data(df)
-
-    # 「○○個のデータに不備があったため調整しました」表示
     if fixed_count > 0:
         st.warning(f"{int(fixed_count)} 個のデータに不備があったため調整しました（補完・平均埋めなど）。")
 
@@ -167,12 +224,11 @@ if uploaded_file:
     st.write(df_fixed)
 
     # -----------------------------------------------------------
-    # (1) グラビティモデル
+    # (1) グラビティモデル (OLS)
     # -----------------------------------------------------------
     if model_choice == "グラビティモデル":
         st.subheader("グラビティモデルの結果")
 
-        # 対数変換用に「Flow>0」「Distance>0」など一応絞り込み
         df_model = df_fixed[
             (df_fixed["Flow"] > 0)
             & (df_fixed["Distance"] > 0)
@@ -180,13 +236,11 @@ if uploaded_file:
             & (df_fixed["Population_Destination"] > 0)
         ].copy()
 
-        # ログ変換
         df_model["log_Flow"] = np.log(df_model["Flow"])
         df_model["log_Distance"] = np.log(df_model["Distance"])
         df_model["log_PopO"] = np.log(df_model["Population_Origin"])
         df_model["log_PopD"] = np.log(df_model["Population_Destination"])
 
-        # 回帰
         X = df_model[["log_Distance", "log_PopO", "log_PopD"]]
         X = sm.add_constant(X)
         y = df_model["log_Flow"]
@@ -195,7 +249,7 @@ if uploaded_file:
         df_model["log_Flow_pred"] = model.predict(X)
         df_model["Flow_pred"] = np.exp(df_model["log_Flow_pred"])
 
-        # 結果表示
+        # 結果表示（OLSサマリ）
         st.write(model.summary())
 
         # 評価指標
@@ -227,7 +281,7 @@ if uploaded_file:
             )
 
     # -----------------------------------------------------------
-    # (2) 小売引力モデル
+    # (2) 小売引力モデル (OLS)
     # -----------------------------------------------------------
     elif model_choice == "小売引力モデル":
         st.subheader("小売引力モデルの結果")
@@ -250,7 +304,7 @@ if uploaded_file:
         df_model["log_Flow_pred"] = model.predict(X)
         df_model["Flow_pred"] = np.exp(df_model["log_Flow_pred"])
 
-        # 結果表示
+        # 結果表示（OLSサマリ）
         st.write(model.summary())
 
         # 評価指標
@@ -282,7 +336,7 @@ if uploaded_file:
             )
 
     # -----------------------------------------------------------
-    # (3) エントロピー最大化モデル
+    # (3) エントロピー最大化モデル + 疑似的回帰サマリ
     # -----------------------------------------------------------
     else:  # エントロピー最大化モデル
         st.subheader("エントロピー最大化モデルの結果")
@@ -292,31 +346,15 @@ if uploaded_file:
             & (df_fixed["Distance"] > 0)
         ].copy()
 
+        # ================================
+        # 8-1) 疑似回帰サマリの取得
+        # ================================
+        beta_opt, se_beta, t_val, p_val, nobs, df_resid, res = entropy_model_regression(df_model)
+
+        # 予測Flow
         origins = df_model["Origin"].unique()
         destinations = df_model["Destination"].unique()
         origin_flows = df_model.groupby("Origin")["Flow"].sum().to_dict()
-
-        def objective(beta):
-            mse_list = []
-            for o in origins:
-                denom = sum(
-                    math.exp(-beta * df_model.loc[(df_model["Origin"] == o) & (df_model["Destination"] == d), "Distance"].values[0])
-                    for d in destinations if ((df_model["Origin"] == o) & (df_model["Destination"] == d)).any()
-                )
-                for d in destinations:
-                    if ((df_model["Origin"] == o) & (df_model["Destination"] == d)).any():
-                        dist_od = df_model.loc[(df_model["Origin"] == o) & (df_model["Destination"] == d), "Distance"].values[0]
-                        obs = df_model.loc[(df_model["Origin"] == o) & (df_model["Destination"] == d), "Flow"].values[0]
-                        pred = origin_flows[o] * math.exp(-beta * dist_od) / denom
-                        mse_list.append((obs - pred)**2)
-            return np.mean(mse_list)
-
-        try:
-            res = minimize(objective, x0=0.1, method="Nelder-Mead")
-            beta_opt = res.x[0]
-        except Exception as e:
-            st.error(f"最適化中にエラーが発生しました: {e}")
-            st.stop()
 
         def calculate_predicted_flow(row):
             o = row["Origin"]
@@ -329,23 +367,50 @@ if uploaded_file:
         df_model["Flow_pred"] = df_model.apply(calculate_predicted_flow, axis=1)
         df_model["Residual"] = df_model["Flow"] - df_model["Flow_pred"]
 
+        # SSE, MSE, R²などの計算
+        sse = np.sum(df_model["Residual"]**2)
         mse = np.mean(df_model["Residual"]**2)
         rmse = np.sqrt(mse)
         mae = np.mean(abs(df_model["Residual"]))
         ss_tot = np.sum((df_model["Flow"] - np.mean(df_model["Flow"]))**2)
-        ss_res = np.sum(df_model["Residual"]**2)
-        r2 = 1 - (ss_res / ss_tot)
+        r2 = 1 - (sse / ss_tot)
 
-        st.write(f"**推定された beta:** {beta_opt:.4f}")
-        st.markdown("#### 評価指標")
-        st.write(f"- MSE:  {mse:.3f}")
+        # ================================
+        # 8-2) 疑似的な「回帰サマリ」表示
+        # ================================
+        st.markdown("**詳細な結果（近似的な回帰サマリ）**")
+        st.write(f"最適化メソッド: {res.method}")
+        st.write(f"最終反復回数: {res.nit}, 収束判定: {res.message}")
+
+        st.markdown("---")
+
+        st.markdown("**パラメータ推定値**")
+        st.write("※ エントロピー最大化モデルは1パラメータ (β) のみです。")
+        col1, col2, col3, col4 = st.columns([1,1,1,1])
+        col1.metric("beta", f"{beta_opt:.4f}")
+        col2.metric("std err", f"{se_beta:.4f}" if not np.isnan(se_beta) else "NaN")
+        col3.metric("t 値", f"{t_val:.3f}" if not np.isnan(t_val) else "NaN")
+        col4.metric("p 値", f"{p_val:.3f}" if not np.isnan(p_val) else "NaN")
+
+        st.markdown("---")
+
+        st.markdown("**モデル全体の評価指標**")
+        st.write(f"- No. Observations: {nobs}")
+        st.write(f"- SSE: {sse:.3f}")
+        st.write(f"- MSE: {mse:.3f}")
         st.write(f"- RMSE: {rmse:.3f}")
-        st.write(f"- MAE:  {mae:.3f}")
-        st.write(f"- R²:   {r2:.3f}")
+        st.write(f"- MAE: {mae:.3f}")
+        st.write(f"- R²:  {r2:.3f}")
 
+        st.markdown("---")
+
+        # ================================
+        # 8-3) 結果テーブル表示
+        # ================================
         st.write("#### 予測結果")
         st.write(df_model[["Origin", "Destination", "Flow", "Flow_pred"]])
 
+        # Excel出力
         out_file = "entropy_model_result.xlsx"
         df_model.to_excel(out_file, index=False)
         with open(out_file, "rb") as f:
